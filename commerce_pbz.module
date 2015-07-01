@@ -1,0 +1,442 @@
+<?php
+
+/**
+ * @file
+ * Provides an pbz payment method for Drupal Commerce.
+ */
+define("COMMERCE_PBZ_TESTING_URL", "http://localhost/post.php");
+define("COMMERCE_PBZ_PRODUCTION_URL", "https://mycheckout.pbzcard.hr/icheckout/");
+
+/**
+ * Implementation of hook_menu().
+ *
+ * @return An array of menu items.
+ */
+function commerce_pbz_menu() {
+  $items = array();
+  
+  // Define an always accessible path to receive and send order details
+  $items['commerce_pbz/checkout_details'] = array(
+    'page callback' => 'commerce_pbz_checkout_details',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+    'file' => 'commerce_pbz.pages.inc',
+  );
+  
+  // Define an always accessible path to receive the transaction results
+  $items['commerce_pbz/payment_response'] = array(
+    'page callback' => 'commerce_pbz_redirect_page',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+    'file' => 'commerce_pbz.pages.inc',
+  );
+  
+  // Define an always accessible path to redirect to the correct page after payment
+  $items['commerce_pbz/return'] = array(
+    'page callback' => 'commerce_pbz_return',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+    'file' => 'commerce_pbz.pages.inc',
+  );
+  
+  return $items;
+}
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function commerce_pbz_commerce_payment_method_info() {
+  $payment_methods = array();
+
+  $icons = commerce_pbz_icons();
+  $display_title = t('Credit card');
+  $display_title .= '<div class="commerce-payment-pbz-icons">' . implode(' ', $icons) . '</div>';
+
+  $payment_methods['commerce_pbz'] = array(
+    'title' => t('PBZ MyCheckOut'),
+    'short_title' => t('PBZ'),
+    'display_title' => $display_title,
+    'description' => t('PBZ Payment Gateway (Croatia)'),
+    'terminal' => FALSE,
+    'offsite' => TRUE,
+    'offsite_autoredirect' => TRUE,
+  );
+
+  return $payment_methods;
+}
+
+/**
+ * Payment method callback: settings form.
+ */
+function commerce_pbz_settings_form($settings = NULL) {
+  $form = array();
+
+  // Merge default settings into the stored settings array.
+  $settings = (array) $settings + array(
+    'commerce_pbz_store' => '',
+    'commerce_pbz_secret' => '',
+    'commerce_pbz_testing_url' => COMMERCE_PBZ_TESTING_URL,
+    'commerce_pbz_production_url' => COMMERCE_PBZ_PRODUCTION_URL,
+    'commerce_pbz_currency' => '191',
+    'commerce_pbz_use_testing' => 1,
+    'commerce_pbz_use_inline_payment' => 0,
+  );
+
+  $form['commerce_pbz_store'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Merchant id'),
+    '#default_value' => $settings['commerce_pbz_store'],
+    '#size' => 16,
+    '#maxlength' => 16,
+    '#description' => t('Store the store Merchantid from PBZ MyCheckOut.'),
+    '#required' => TRUE,
+  );
+  $form['commerce_pbz_secret'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Secret key'),
+    '#default_value' => $settings['commerce_pbz_secret'],
+    '#size' => 16,
+    '#maxlength' => 50,
+    '#description' => t('Secret key for PBZ MyCheckOut.'),
+    '#required' => TRUE,
+  );
+  $form['commerce_pbz_testing_url'] = array(
+    '#type' => 'textfield',
+    '#title' => t('PBZ MyCheckOut Connect URL (Testing)'),
+    '#default_value' => $settings['commerce_pbz_testing_url'],
+    '#size' => 70,
+    '#maxlength' => 180,
+    '#description' => t('URL to connect to the PBZ MyCheckOut Connect service (Testing)'),
+    '#required' => TRUE,
+  );
+  $form['commerce_pbz_production_url'] = array(
+    '#type' => 'textfield',
+    '#title' => t('PBZ MyCheckOut Connect URL (Production)'),
+    '#default_value' => $settings['commerce_pbz_production_url'],
+    '#size' => 70,
+    '#maxlength' => 180,
+    '#description' => t('URL to connect to the PBZ MyCheckOut Connect service (Production)'),
+    '#required' => TRUE,
+  );
+  $form['commerce_pbz_use_testing'] = array(
+    '#type' => 'radios',
+    '#title' => t('Use testing platform'),
+    '#default_value' => $settings['commerce_pbz_use_testing'],
+    '#options' => array(0 => t('No'), 1 => t('Yes')),
+    '#description' => t('Deactivate when ready for production'),
+    '#required' => TRUE,
+  );
+
+
+  return $form;
+}
+
+/**
+ * Payment method callback: checkout form.
+ */
+function commerce_pbz_redirect_form($form, &$form_state, $order, $payment_method) {
+  if (empty($payment_method["settings"]['commerce_pbz_store'])) {
+    drupal_set_message(t('Commerce PBZ is not configured for use. Fill all fields in configuration page.'), 'error');
+    return array();
+  }
+
+  return commerce_pbz_order_form($form, $form_state, $order, $payment_method);
+}
+
+/**
+ * Build order form.
+ * 
+ * @param type $form
+ * @param type $form_state
+ * @param type $order
+ * @param type $settings 
+ */
+function commerce_pbz_order_form($form, &$form_state, $order, $payment_method) {
+  $action = $payment_method['settings']['commerce_pbz_use_testing'] ?
+            $payment_method['settings']['commerce_pbz_testing_url'] :
+            $payment_method['settings']['commerce_pbz_production_url'];
+	
+  $amount = number_format($order->commerce_order_total[LANGUAGE_NONE][0]['amount']/100, 2, '.', '');
+  $store = $payment_method['settings']['commerce_pbz_store'];
+  $key = $payment_method['settings']['commerce_pbz_secret'];
+  
+  $form['#action'] = $action;
+  $form['submit_type'] = array('#type' => 'hidden', '#value' => 'cust');
+  $form['trantype'] = array('#type' => 'hidden', '#value' => 'auth');
+  $form['request_type'] = array('#type' => 'hidden', '#value' => 'transaction');
+  $form['purchase_amount'] = array('#type' => 'hidden', '#value' => $amount);
+  $form['purchase_currency'] = array('#type' => 'hidden', '#value' => '191');
+  $form['order_number'] = array('#type' => 'hidden', '#value' => $order->order_id);
+  $form['merchant_id'] = array('#type' => 'hidden', '#value' => $store);
+  $form['request_hash'] = array('#type' => 'hidden', '#value' => sha1($store.$amount.$order->order_id.$key));
+  $form['customer_lang'] = array('#type' => 'hidden', '#value' => 'hr');
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Redirect to PBZ payment'),
+  );
+  
+  return $form;
+}
+
+/**
+ * Payment transaction for the specified charge amount.
+ *
+ * @param $payment_method
+ *   The payment method instance object used to charge this payment.
+ * @param $order
+ *   The order object the payment applies to.
+ * @param $charge
+ *   An array indicating the amount and currency code to charge.
+ * @param $name
+ *   The name entered on the submission form.
+ */
+function commerce_pbz_transaction($order, $response) {
+  // Exit when we don't get a payment status we recognize.
+  if (!in_array($response['response_result'], array(000, 100, 101, 104, 106, 107, 109, 111, 115, 117, 121, 400, 903, 909, 912, 930, 931))) {
+    return FALSE;
+  }
+
+  // Create a new payment transaction for the order.
+  $transaction = commerce_payment_transaction_new('commerce_pbz', $order->order_id);
+  
+  $wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $transaction->payment_method = 'commerce_pbz';
+  $transaction->currency_code = $wrapper->commerce_order_total->currency_code->value();
+  $transaction->amount = $response['purchase_amount'];
+//  $transaction->remote_id = $response['pszApprovalCode'];
+  $transaction->payload[REQUEST_TIME] = $response;
+  $transaction->remote_status = $response['response_result'];
+
+  switch ($response['response_result']) {
+    case 000:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_SUCCESS;
+      $transaction->message = t('The payment has completed with approval code @approval_code.', array(
+        '@approval_code' => $response['response_result'],
+      ));
+      break;
+    
+    case 100:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Odbijen',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 101:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Istekla kartica',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 104:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Ograničena kartica',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 106:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Pokušaji unosa pina',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 107:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Referal',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 109:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Nevažeća uspostava servisa',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 111:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Kartica nije prisutna',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 115:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Zahtjevana funkcija nije podržana',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 117:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Krivi pin',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 121:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Prekoračeni limit',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 400:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Poništenje prihvaćeno',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 903:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Ponovno unijeti transakciju',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 909:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Tehnička greška - nije moguće procesirati zahtjev',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 912:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Veza prema hostu nije uspostavljena',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 930:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Transakcija nije pronađena',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+      
+    case 931:
+      $transaction->status = COMMERCE_PAYMENT_STATUS_FAILURE;
+      $transaction->message = t('The payment has failed with error code @error_code: @error_description.', array(
+        '@error_code' => $response['response_result'], 
+        '@error_description' => 'Transakcija poništena',
+      ));
+      
+      watchdog('commerce_pbz', 'Payment process failed. !response', array('!response' => '<pre>' . check_plain(print_r($response, TRUE)) . '</pre>'), WATCHDOG_ERROR);
+      break;
+  }
+
+  commerce_payment_transaction_save($transaction);
+}
+
+/**
+ * Returns an array of PBZ payment method icon img elements.
+ *
+ * @return
+ *   The array of themed payment method icons keyed by name: visa, mastercard
+ */
+function commerce_pbz_icons() {
+  $icons = array();
+
+  $payment_methods = array(
+//    'pbz' => t('PBZ'),
+		'americanexpress'	=> array(t('American Express'), 'http://www.americanexpress.hr'),
+    'mastercard' => array(t('MasterCard'), 'http://www.mastercard.com'),
+    'maestro' => array(t('Maestro'), 'http://www.maestrocard.com'),
+    'visa' => array(t('Visa'), 'http://www.visa.com'),
+  );
+
+  foreach ($payment_methods as $name => $title) {
+    $variables = array(
+      'path' => drupal_get_path('module', 'commerce_pbz') . '/images/' . $name . '23.gif',
+      'title' => $title[0],
+      'alt' => $title[0],
+      'attributes' => array(
+        'class' => array('commerce-payment-pbz-icon'),
+      ),
+    );
+    $links[$name] = l(theme('image', $variables), $title[1], array('attributes' => array('class' => 'anchor-class'), 'html' => TRUE));
+  }
+
+  return $links;
+}
+
+
+/**
+ * Get all rules settings of the PBZ payment method. You can only have one PBZ payment rule activated.
+ * 
+ * @param type $method_id
+ * @param type $rule_name
+ * @return type 
+ */
+function _commerce_pbz_get_rule_config() {
+  $method_id = 'commerce_pbz';
+  $rule_name = 'commerce_payment_commerce_pbz';
+  
+  // Allow other modules to load a different PBZ rule
+  drupal_alter('commerce_pbz_rule', $rule_name);
+  
+  $rule = rules_config_load($rule_name);
+  $settings = array();
+
+  foreach ($rule->actions() as $action) {
+    if ($action->getElementName() == 'commerce_payment_enable_' . $method_id) {
+      if (is_array($action->settings['payment_method']) && !empty($action->settings['payment_method']['settings'])) {
+        $settings = $action->settings['payment_method']['settings'];
+      }
+    }
+  }
+
+  return $settings;
+}
