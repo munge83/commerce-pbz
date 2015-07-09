@@ -4,8 +4,8 @@
  * @file
  * Provides an pbz payment method for Drupal Commerce.
  */
-define("COMMERCE_PBZ_TESTING_URL", "http://localhost/post.php");
-define("COMMERCE_PBZ_PRODUCTION_URL", "https://mycheckout.pbzcard.hr/icheckout/");
+define("COMMERCE_PBZ_TESTING_URL", "https://pgwtest.ht.hr/services/payment/api/authorize-form");
+define("COMMERCE_PBZ_PRODUCTION_URL", "https://pgw.ht.hr/services/payment/api/authorize-form");
 
 /**
  * Implementation of hook_menu().
@@ -156,21 +156,32 @@ function commerce_pbz_order_form($form, &$form_state, $order, $payment_method) {
             $payment_method['settings']['commerce_pbz_testing_url'] :
             $payment_method['settings']['commerce_pbz_production_url'];
 	
-  $amount = number_format($order->commerce_order_total[LANGUAGE_NONE][0]['amount']/100, 2, '.', '');
+  
+  $amount = $order->commerce_order_total[LANGUAGE_NONE][0]['amount'];
   $store = $payment_method['settings']['commerce_pbz_store'];
   $key = $payment_method['settings']['commerce_pbz_secret'];
+  $url_settings = array(
+    // Return to the previous page when payment is canceled.
+    'cancel_return' => url('checkout/' . $order->order_id . '/payment/back/' . $order->data['payment_redirect_key'], array('absolute' => TRUE)),
+
+    // Return to the payment redirect page for processing successful payments.
+    'return' => url('checkout/' . $order->order_id . '/payment/return/' . $order->data['payment_redirect_key'], array('absolute' => TRUE)),
+  );
+  $authorization_type = 1;
+  $signature = openssl_digest('authorize-form'.$key.$store.$key.$order->order_id.$key.$amount.$key.$authorization_type.$key.'en'.$key.$url_settings['return'].$key.$url_settings['cancel_return'].$key, 'sha512');
   
   $form['#action'] = $action;
-  $form['submit_type'] = array('#type' => 'hidden', '#value' => 'cust');
-  $form['trantype'] = array('#type' => 'hidden', '#value' => 'auth');
-  $form['request_type'] = array('#type' => 'hidden', '#value' => 'transaction');
-  $form['purchase_amount'] = array('#type' => 'hidden', '#value' => $amount);
-  $form['purchase_currency'] = array('#type' => 'hidden', '#value' => '191');
-  $form['order_number'] = array('#type' => 'hidden', '#value' => $order->order_id);
-  $form['merchant_id'] = array('#type' => 'hidden', '#value' => $store);
-  $form['request_hash'] = array('#type' => 'hidden', '#value' => sha1($store.$amount.$order->order_id.$key));
-  $form['customer_lang'] = array('#type' => 'hidden', '#value' => 'hr');
+  $form['pgw_shop_id'] = array('#type' => 'hidden', '#value' => $store);
+  $form['pgw_order_id'] = array('#type' => 'hidden', '#value' => $order->order_id);
+  $form['pgw_amount'] = array('#type' => 'hidden', '#value' => $amount);
+  $form['pgw_authorization_type'] = array('#type' => 'hidden', '#value' => $authorization_type);
+  $form['pgw_language'] = array('#type' => 'hidden', '#value' => 'en');
+  $form['pgw_success_url'] = array('#type' => 'hidden', '#value' => $url_settings['return']);
+  $form['pgw_failure_url'] = array('#type' => 'hidden', '#value' => $url_settings['cancel_return']);
+  $form['pgw_signature'] = array('#type' => 'hidden', '#value' => $signature);
 
+
+  
   $form['submit'] = array(
     '#type' => 'submit',
     '#value' => t('Redirect to PBZ payment'),
